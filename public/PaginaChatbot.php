@@ -1,11 +1,41 @@
 <?php
 
 require_once "../Controller/GeminiController.php";
-// Garante que variáveis existem
-if($_SERVER['REQUEST_METHOD'] === "POST"){
-    $pergunta = $_POST['pergunta'] ?? "";
+// Garante que variáveis existem (evita notices quando não houver POST)
+$pergunta = '';
+$resposta = '';
+
+// Tratamento AJAX: se receber POST JSON via fetch, responde com JSON direto (usa enviarMensagemGemini)
+if ($_SERVER['REQUEST_METHOD'] === "POST" && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
+    $raw = file_get_contents('php://input');
+    $data = json_decode($raw, true);
+    $pergunta = trim($data['pergunta'] ?? "");
+    if ($pergunta === "") {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['erro' => 'Pergunta vazia.']);
+        exit;
+    }
     $respostaApi = enviarMensagemGemini($pergunta);
-    $resposta = $respostaApi['resposta'] ?? "Erro ao obter resposta.";
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($respostaApi, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// Fluxo normal de POST via form (fallback sem JS)
+if ($_SERVER['REQUEST_METHOD'] === "POST") {
+    $pergunta = trim($_POST['pergunta'] ?? "");
+    if ($pergunta !== "") {
+        $respostaApi = enviarMensagemGemini($pergunta);
+        if (is_array($respostaApi) && isset($respostaApi['resposta'])) {
+            $resposta = $respostaApi['resposta'];
+        } elseif (is_array($respostaApi) && isset($respostaApi['erro'])) {
+            $resposta = "Erro: " . $respostaApi['erro'];
+        } else {
+            $resposta = "Erro ao obter resposta do serviço.";
+        }
+    } else {
+        $resposta = "Pergunta vazia.";
+    }
 }
 ?>
 
@@ -134,20 +164,7 @@ if($_SERVER['REQUEST_METHOD'] === "POST"){
                 <p>|</p>
                 <a href="#sessao-dicas">Dicas</a>
                 <p>|</p>
-                <a href="#sessao-videos">Vídeos</a>
-            </div>
-
-            <div class="copright">
-                <p>©2025 Fala.i. Todos os direitos reservados.</p>
-            </div>
-        </div>
-    </footer>
-
-    <div vw class="enabled">
-        <div vw-access-button class="active"></div>
-        <div vw-plugin-wrapper>
-            <div class="vw-plugin-top-wrapper"></div>
-        </div>
+                <a href
     </div>
 
     <script src="https://vlibras.gov.br/app/vlibras-plugin.js"></script>
@@ -308,8 +325,35 @@ if($_SERVER['REQUEST_METHOD'] === "POST"){
         mostrarMensagemUsuario(texto);
         input.value = "";
 
-        // envia para Gemini (via sua API local / flask)
-        await enviarMensagemGemini(texto);
+        // envia para a própria página (PHP) que agora faz proxy direto ao Kobold
+        try {
+            const response = await fetch(window.location.pathname, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-Requested-With": "XMLHttpRequest"
+                },
+                body: JSON.stringify({ pergunta: texto })
+            });
+
+            const data = await response.json();
+            const resposta = data.resposta || data.generated_text || data.text || "Erro na resposta do servidor.";
+
+            const mainContainer = document.getElementById("chat-container") || document.querySelector(".main-container");
+            const divResposta = document.createElement("div");
+            divResposta.className = "resposta-animada";
+            divResposta.innerHTML = `<strong>Fala.i:</strong><p>${resposta}</p>`;
+            mainContainer.appendChild(divResposta);
+            mainContainer.scrollTop = mainContainer.scrollHeight;
+        } catch (err) {
+            console.error("Erro ao comunicar com o servidor:", err);
+            const mainContainer = document.getElementById("chat-container") || document.querySelector(".main-container");
+            const divResposta = document.createElement("div");
+            divResposta.className = "resposta-animada";
+            divResposta.innerHTML = `<strong>Fala.i:</strong><p>Erro ao comunicar com o servidor.</p>`;
+            mainContainer.appendChild(divResposta);
+            mainContainer.scrollTop = mainContainer.scrollHeight;
+        }
     });
 
     // Envia para a rota local do Gemini (mesma lógica que você já tinha)

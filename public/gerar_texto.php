@@ -17,6 +17,8 @@ $textosn3 = [
     // nivel foda
 ];
 
+// Use a lista desejada (por enquanto nível 1)
+$textos = $textosn1;
 
 echo $textos[array_rand($textos)];
 ?>

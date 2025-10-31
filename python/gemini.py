@@ -2,7 +2,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 from dotenv import load_dotenv
-import google.generativeai as genai
+import requests
+import json
 
 # Carrega variáveis do .env
 load_dotenv()
@@ -10,8 +11,8 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Configuração da API do Gemini
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# URL do KoboldCPP (configurável via .env)
+KOBOLD_URL = os.getenv("KOBOLD_URL", "http://localhost:5001/api/v1/generate")
 
 # 🎙️ REGRAS DO COACH DE ORATÓRIA
 ORATORIA_RULES = """
@@ -47,6 +48,26 @@ Siga SEMPRE estas regras:
 Fala.i é um verdadeiro mentor que ajuda o aluno a se expressar melhor, treinar apresentações e vencer a vergonha de falar.
 """
 
+def extract_text_from_kobold(resp_json):
+    # tenta diversas chaves comuns para maior compatibilidade
+    if not isinstance(resp_json, dict):
+        return None
+    # formatos possíveis: {'generated_text': '...'} ou {'text': '...'}
+    for key in ("generated_text", "text", "output"):
+        if key in resp_json and isinstance(resp_json[key], str):
+            return resp_json[key]
+    # formatos em listas: {'results':[{'text':'...'}]} ou {'generations':[{'text':'...'}]}
+    for list_key in ("results", "generations", "choices", "outputs"):
+        val = resp_json.get(list_key)
+        if isinstance(val, list) and len(val) > 0:
+            first = val[0]
+            if isinstance(first, dict):
+                for k in ("text", "generated_text", "output"):
+                    if k in first and isinstance(first[k], str):
+                        return first[k]
+    # fallback: stringify
+    return None
+
 @app.route("/mensagem", methods=["POST"])
 def mensagem():
     try:
@@ -56,15 +77,39 @@ def mensagem():
         if not mensagem:
             return jsonify({"erro": "Nenhuma mensagem recebida"}), 400
 
-        model = genai.GenerativeModel("gemini-2.0-flash")
-
-        # 🧠 Prompt completo com personalidade fixa
+        # monta prompt combinando regras + entrada do aluno
         prompt_final = f"{ORATORIA_RULES}\n\nAluno: {mensagem}\nFala.i:"
 
-        resposta = model.generate_content(prompt_final)
+        # payload para KoboldCPP (ajuste conforme sua instalação, estes são valores razoáveis)
+        payload = {
+            "prompt": prompt_final,
+            "max_length": int(os.getenv("KOBOLD_MAX_TOKENS", "512")),
+            "temperature": float(os.getenv("KOBOLD_TEMPERATURE", "0.7")),
+            # outros parâmetros opcionais podem ser adicionados conforme a API do seu servidor Kobold
+        }
 
-        return jsonify({"resposta": resposta.text})
+        headers = {"Content-Type": "application/json"}
 
+        resp = requests.post(KOBOLD_URL, json=payload, headers=headers, timeout=20)
+        resp.raise_for_status()
+
+        try:
+            resp_json = resp.json()
+        except json.JSONDecodeError:
+            # resposta não JSON: usa texto bruto
+            resposta_texto = resp.text.strip()
+            return jsonify({"resposta": resposta_texto})
+
+        # tenta extrair texto de forma flexível
+        resposta_texto = extract_text_from_kobold(resp_json)
+        if not resposta_texto:
+            # Se a resposta for em algum campo não antecipado, converte JSON em string como fallback
+            resposta_texto = json.dumps(resp_json, ensure_ascii=False)
+
+        return jsonify({"resposta": resposta_texto})
+
+    except requests.RequestException as e:
+        return jsonify({"erro": f"Erro de conexão com KoboldCPP: {str(e)}"}), 502
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
 
